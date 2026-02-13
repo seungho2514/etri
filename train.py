@@ -1,115 +1,96 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import argparse
 import os
-
+import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from types import SimpleNamespace
 
 from src.utils import setup_paths
-setup_paths()
+setup_paths() 
 
-from src.dataset import get_dataset
-from src.models import AudioClassifier
-
-def load_config(config_path):
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return SimpleNamespace(**config)
+from src.dataset import get_dataset #
+from src.models import AudioClassifier #
+from src.codec import AudioCodec
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
-    parser.add_argument("--fold", type=int, default=None)
-    parser.add_argument("--save_dir", type=str, default=None)
+    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--dataset", type=str, choices=["esc50", "urbansound"], required=True)
+    parser.add_argument("--backbone", type=str, choices=["beats", "ast"], required=True)
+    
+    parser.add_argument("--codec", type=str, choices=["encodec", "soundstream", "opus"], required=True)
+    parser.add_argument("--bitrate", type=float, default=6.0)
+    parser.add_argument("--fold", type=int, default=1)
+    parser.add_argument("--data_root", type=str, default=None)
+    parser.add_argument("--meta_csv", type=str, default=None)
+    parser.add_argument("--save_dir", type=str, default="./checkpoints")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-
-    if args.fold is not None:
-        cfg.fold = args.fold
-        
-    if args.save_dir is not None:
-        cfg.save_dir = args.save_dir
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"----Training Start: {args.dataset} | Fold {args.fold} | Backbone {args.backbone}----")
-
-    ds_cfg_train = SimpleNamespace(
-        name=cfg.dataset, path=cfg.data_root, meta_csv=cfg.meta_csv,
-        fold=cfg.fold, train=True, duration=duration
-    )
+    os.makedirs(args.save_dir, exist_ok=True)
+    save_path = os.path.join(args.save_dir, f"{args.dataset}_{args.backbone}_{args.codec}_{args.bitrate}k_analysis.pt")
     
-    ds_cfg_test = SimpleNamespace(
-        name=cfg.dataset, path=cfg.data_root, meta_csv=cfg.meta_csv,
-        fold=cfg.fold, train=False, duration=duration
-    )
 
-    train_ds = get_dataset(ds_cfg_train)
-    test_ds = get_dataset(ds_cfg_test)
+    with open(args.config, 'r') as f:
+        cfg = SimpleNamespace(**yaml.safe_load(f))
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    num_classes = 50 if args.dataset == 'esc50' else 10 #
+    duration = 5 if args.dataset == 'esc50' else 4
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=4)
-    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=4)
+    data_root = args.data_root if args.data_root else cfg.data_root
+    meta_csv = args.meta_csv if args.meta_csv else cfg.meta_csv
+    # 1. 데이터셋 로드
+    ds_train = get_dataset(SimpleNamespace(name=args.dataset, path=data_root, 
+                                       meta_csv=meta_csv, fold=args.fold, 
+                                       train=True, duration=duration))
+    ds_test = get_dataset(SimpleNamespace(name=args.dataset, path=data_root, 
+                                        meta_csv=meta_csv, fold=args.fold, 
+                                        train=False, duration=duration))
+    
+    train_loader = DataLoader(ds_train, batch_size=cfg.batch_size, shuffle=True, num_workers=4)
+    test_loader = DataLoader(ds_test, batch_size=cfg.batch_size, shuffle=False, num_workers=4)
 
-    # 6. Model (args -> cfg)
-    model = AudioClassifier(
-        backbone_name=cfg.backbone, 
-        num_classes=num_classes, 
-        ckpt_path=cfg.ckpt_path,
-        duration=duration
-    ).to(device)
+    # 2. 모델 및 코덱 초기화
+    model = AudioClassifier(args.backbone, num_classes, cfg.ckpt_path, duration).to(device)
+    codec_mgr = AudioCodec(args.codec, device, bitrate=args.bitrate)
 
-    for param in model.backbone.parameters():
-        param.requires_grad = False
-
-    optimizer = optim.Adam(model.head.parameters(), lr=cfg.lr)
+    optimizer = torch.optim.Adam(model.head.parameters(), lr=float(cfg.lr))
     criterion = nn.CrossEntropyLoss()
 
-    os.makedirs(cfg.save_dir, exist_ok=True)
+    # 3. 학습 루프 (Codec-Aware Training)
     best_acc = 0.0
-
-    # 7. Training Loop
     for epoch in range(cfg.epochs):
         model.train()
-        train_loss = 0
-        
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{cfg.epochs}"):
-            wav = batch['wav'].to(device)
-            label = batch['label'].to(device)
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
+            wav, label = batch['wav'].to(device), batch['label'].to(device)
+            
+            # [핵심] 원본 오디오를 즉시 압축 후 복원된 음으로 교체
+            wav = codec_mgr.apply(wav)
 
             optimizer.zero_grad()
-            outputs = model(wav)
-            loss = criterion(outputs, label)
+            loss = criterion(model(wav), label)
             loss.backward()
             optimizer.step()
-            train_loss += loss.item()
 
+        # 4. 검증 루프 (역시 압축된 소리로 평가)
         model.eval()
-        correct = 0
-        total = 0
-
+        correct, total = 0, 0
         with torch.no_grad():
             for batch in test_loader:
-                wav = batch['wav'].to(device)
-                label = batch['label'].to(device)
-
-                outputs = model(wav)
-                preds = outputs.argmax(dim=1)
+                wav, label = batch['wav'].to(device), batch['label'].to(device)
+                wav = codec_mgr.apply(wav) # 평가 시에도 동일 조건 적용
+                preds = model(wav).argmax(dim=1)
                 correct += (preds == label).sum().item()
                 total += label.size(0)
         
-        test_acc = correct / total
-        print(f"Epoch {epoch+1}: Loss {train_loss/len(train_loader):.4f} | Test Acc {test_acc:.4f}")
+        acc = correct / total
+        print(f"📊 Fold {args.fold} Epoch {epoch+1}: Acc {acc:.4f}")
 
-        # Save Best
-        if test_acc > best_acc:
-            best_acc = test_acc
-            # 파일명에 fold 정보 포함
-            save_name = f"{cfg.dataset}_{cfg.backbone}_fold{cfg.fold}_best.pt"
-            save_path = os.path.join(cfg.save_dir, save_name)
+        if acc > best_acc:
+            best_acc = acc
             torch.save(model.state_dict(), save_path)
-            print(f"💾 Saved Best Model: {save_path}")
 
 if __name__ == "__main__":
     main()

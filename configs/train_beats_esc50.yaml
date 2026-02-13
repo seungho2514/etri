@@ -1,0 +1,10 @@
+dataset: esc50
+data_root: /data/ACoM/ESC-50
+meta_csv: /data/ACoM/ESC-50/meta/esc50.csv
+backbone: beats
+ckpt_path: /data/BEATs_iter3_plus_AS20K_finetuned_on_AS2M_cpt1.pt  # BEATs_iter3_plus_AS20K_finetuned_on_AS2M_cpt1.pt 경로가 있다면 입력
+fold: 1
+epochs: 10
+batch_size: 32
+lr: 0.001
+save_dir: ./checkpoints/beats_esc50
