@@ -5,6 +5,8 @@ import os
 import yaml
 import pandas as pd
 import numpy as np
+import random
+
 from tqdm import tqdm
 from types import SimpleNamespace
 from torch.utils.data import DataLoader
@@ -17,6 +19,15 @@ setup_paths()
 from src.dataset import get_dataset
 from src.models import AudioClassifier
 from src.codec import AudioCodec
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # 멀티 GPU 사용 시
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # ---------------------------------------------------------
 # 1. Saliency 추출기 (트랜스포머 이전 레이어 타겟)
@@ -59,6 +70,8 @@ class SaliencyFilter:
         return score.squeeze(0)
 
 def main():
+    set_seed(42)
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--model_path", type=str, required=True)
@@ -115,7 +128,7 @@ def main():
     save_dir = "./csv"
     os.makedirs(save_dir, exist_ok=True)
     
-    file_name = f"eval_{args.dataset}_{args.backbone}_{args.method}_{args.codec}_{args.mode}_{args.bitrate}k_analysis.csv"
+    file_name = f"eval_{args.dataset}_{args.backbone}_fold{args.fold}_{args.method}_{args.codec}_{args.mode}_{args.bitrate}k.csv"
     save_fn = os.path.join(save_dir, file_name)
     
     

@@ -12,14 +12,9 @@ echo "========================================================="
 echo "🚀 [Start] Full Pipeline - All Folds & All Bitrates!"
 echo "========================================================="
 
-for DB in "esc50" "urbansound"; do
-    if [ "$DB" == "esc50" ]; then
-        ROOT="/data/ACoM/ESC-50"; CSV="/data/ACoM/ESC-50/meta/esc50.csv"
-        MAX_FOLD=5
-    else
-        ROOT="/data/ACoM/UrbanSound8K"; CSV="/data/ACoM/UrbanSound8K/metadata/UrbanSound8K.csv"
-        MAX_FOLD=10
-    fi
+for DB in "urbansound"; do
+    ROOT="/data/ACoM/UrbanSound8K"; CSV="/data/ACoM/UrbanSound8K/metadata/UrbanSound8K.csv"
+    MAX_FOLD=10
 
     # 폴드 1부터 MAX_FOLD까지 전부 돌립니다
     for FOLD in $(seq 1 $MAX_FOLD); do

@@ -3,6 +3,9 @@ import torch.nn as nn
 import argparse
 import os
 import yaml
+import random
+import numpy as np
+
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from types import SimpleNamespace
@@ -14,7 +17,19 @@ from src.dataset import get_dataset #
 from src.models import AudioClassifier #
 from src.codec import AudioCodec
 
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # 멀티 GPU 사용 시
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def main():
+    set_seed(42)
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--dataset", type=str, choices=["esc50", "urbansound"], required=True)
